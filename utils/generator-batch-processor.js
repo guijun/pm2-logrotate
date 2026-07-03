@@ -15,6 +15,7 @@
 const DEFAULT_CONFIG = {
   batchSize: 100,
   flushIntervalMs: 1000,
+  nextMinIntervalMs: 100,
   autoStart: true,
 };
 
