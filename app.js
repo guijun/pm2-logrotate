@@ -5,6 +5,7 @@ var pm2     	= require('pm2');
 var moment  	= require('moment-timezone');
 var scheduler	= require('node-schedule');
 var zlib      = require('zlib');
+var { GeneratorBatchProcessor } = require('./utils/generator-batch-processor');
 
 var conf = pmx.initModule({
   widget : {
@@ -100,49 +101,73 @@ function delete_old(file) {
  * @param {string} file 
  */
 function proceed(file) {
-  // set default final time
   var final_time = moment().format(DATE_FORMAT);
-  // check for a timezone
   if (TZ) {
     try {
       final_time = moment().tz(TZ).format(DATE_FORMAT);
     } catch(err) {
-      // use default
     }
   }
   var final_name = file.substr(0, file.length - 4) + '__' + final_time + '.log';
-  // if compression is enabled, add gz extention and create a gzip instance
+  var GZIP;
   if (COMPRESSION) {
-    var GZIP = zlib.createGzip({ level: zlib.Z_BEST_COMPRESSION, memLevel: zlib.Z_BEST_COMPRESSION });
+    GZIP = zlib.createGzip({ level: zlib.Z_BEST_COMPRESSION, memLevel: zlib.Z_BEST_COMPRESSION });
     final_name += ".gz";
   }
 
-  // create our read/write streams
-	var readStream = fs.createReadStream(file);
-	var writeStream = fs.createWriteStream(final_name, {'flags': 'w+'});
+  var readStream = fs.createReadStream(file);
+  var writeStream = fs.createWriteStream(final_name, {'flags': 'w+'});
 
-  // pipe all stream
-  if (COMPRESSION)
-    readStream.pipe(GZIP).pipe(writeStream);
-  else 
-    readStream.pipe(writeStream);
-  
+  function waitDrain(stream) {
+    return new Promise(function(resolve) {
+      stream.once('drain', resolve);
+    });
+  }
 
-  // listen for error
+  var batchProcessor = new GeneratorBatchProcessor({
+    batchSize: 1024,
+    flushIntervalMs: 1000,
+    mode: 'custom',
+    onFlush: async function(chunks) {
+      if (chunks.length === 0) return;
+      var buffer = Buffer.concat(chunks);
+      var target = COMPRESSION ? GZIP : writeStream;
+      if (!target.write(buffer)) {
+        await waitDrain(target);
+      }
+    }
+  });
+
+  readStream.on('data', function(chunk) {
+    batchProcessor.add(chunk);
+  });
+
+  readStream.on('end', async function() {
+    await batchProcessor.flush();
+    if (COMPRESSION) {
+      GZIP.end();
+    } else {
+      writeStream.end();
+    }
+  });
+
+  if (COMPRESSION) {
+    GZIP.pipe(writeStream);
+  }
+
   readStream.on('error', pmx.notify.bind(pmx));
   writeStream.on('error', pmx.notify.bind(pmx));
   if (COMPRESSION) {
     GZIP.on('error', pmx.notify.bind(pmx));
   }
 
- // when the read is done, empty the file and check for retain option
   writeStream.on('finish', function() {
     if (GZIP) {
       GZIP.close();
     }
     readStream.close();
     writeStream.close();
-    fs.truncate(file, function (err) {
+    fs.truncate(file, function (err) {
       if (err) return pmx.notify(err);
       console.log('"' + final_name + '" has been created');
 
