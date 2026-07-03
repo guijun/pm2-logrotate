@@ -180,6 +180,7 @@ class GeneratorBatchProcessor {
   constructor(config) {
     this.batchSize = config.batchSize ?? DEFAULT_CONFIG.batchSize;
     this.flushIntervalMs = config.flushIntervalMs ?? DEFAULT_CONFIG.flushIntervalMs;
+    this.nextMinIntervalMs = config.nextMinIntervalMs ?? DEFAULT_CONFIG.nextMinIntervalMs;
     this.writeBuffer = new SliceWithReserve(this.batchSize);
     this.readBuffer = new SliceWithReserve(this.batchSize);
     this.onError = config.onError ?? ((err) => internalLogger.error('Processing error', err));
@@ -304,7 +305,12 @@ class GeneratorBatchProcessor {
     }
     // Check if more items arrived during processing and schedule next drain
     if (!doFlush && (!this.writeBuffer.isEmpty() || this.readPosition < this.readBuffer.length)) {
-      setImmediate(() => this.tryDrainBuffer());
+      if (!this.drainTimer) {
+        this.drainTimer = setTimeout(() => {
+          this.drainTimer = null;
+          this.tryDrainBuffer();
+        }, this.nextMinIntervalMs);
+      }
     }
   }
 
